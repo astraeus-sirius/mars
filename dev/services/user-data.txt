@@ -1,0 +1,54 @@
+<powershell>
+Set-TimeZone -Id "Pacific Standard Time" -PassThru
+Set-DefaultAWSRegion -Region us-east-2
+$InstanceId = (Invoke-WebRequest http://169.254.169.254/latest/meta-data/instance-id -UseBasicParsing).content
+$DocumentName = "ias_ad_default_doc"
+$AssociationName = "ASG_Domain_Join"    
+$bucket = 'iaslogs-e2'
+$target = @{Key="InstanceIds";Values=@("$InstanceId")}
+New-SSMAssociation -Name $DocumentName -Target $target -S3Location_OutputS3BucketName $bucket -S3Location_OutputS3KeyPrefix 'ssm/associate'
+
+Stop-Service "live auction server"
+(gc C:\AWG\AWGTools\LiveAuctionServer\appsettings.json) | %{ $_ -replace '^.*\b(IP)\b.*$', "`t`"IP`": `"$($(Test-Connection -ComputerName (hostname) -Count 1  | Select -ExpandProperty IPV4Address).IPAddressToString)`","} | sc C:\AWG\AWGTools\LiveAuctionServer\appsettings.json
+(gc C:\AWG\AWGTools\LiveAuctionServer\appsettings.json) | %{ $_ -replace '^.*\b(IP2)\b.*$', "`t`"IP2`": `"$($(Test-Connection -ComputerName (hostname) -Count 1  | Select -ExpandProperty IPV4Address).IPAddressToString)`","} | sc C:\AWG\AWGTools\LiveAuctionServer\appsettings.json
+$baseUrl = 'http://localhost/web/portal'
+$offset = 0
+$limit = 500
+$continue = $true
+try {
+    while ($continue) {
+        $Path = ""
+        $response = Invoke-WebRequest "$baseUrl$Path" -Headers $headers 
+        $status = $response.StatusCode
+        if ($status -eq 200 -or $status -eq 301) {
+          $continue = $false
+        }
+        $offset += $limit
+    }
+}
+catch [System.Net.WebException] {
+    $statusCode = $_.Exception.Response.StatusCode.Value__
+    if ($statusCode -ne 200 -or $statusCode -ne 301) {
+        # Normal end case. Do nothing.
+    }
+    else {
+    }
+}
+
+Start-Service "live auction server"
+
+#Code to write out scheduled task script that self-deletes
+$scriptlocation = "$env:windir\temp\afterreboot.ps1"
+"Write-EventLog -Message 'HeadlessRestartTask: Map AWG Shared Drive' -LogName System -Source EventLog -EventId 333"| out-file $scriptlocation
+'New-PSDrive –Name "S" –PSProvider FileSystem –Root "\\fs-00d0096a040d9a570.ias.com\share" –Persist' | out-file $scriptlocation -append
+"schtasks.exe /delete /f /tn HeadlessRestartTask" | out-file $scriptlocation -append
+
+#This code schedules the above script
+schtasks.exe /create /f /tn HeadlessRestartTask /ru SYSTEM /sc ONSTART /tr "powershell.exe -file $scriptlocation"
+Write-Host "`"$scriptlocation`" is scheduled to run once after reboot."
+
+#reboot instance
+
+exit
+</powershell>
+<persist>true</persist>
