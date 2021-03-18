@@ -1,0 +1,24 @@
+<powershell>
+Set-TimeZone -Id "Pacific Standard Time" -PassThru
+Set-DefaultAWSRegion -Region us-east-2
+$InstanceId = (Invoke-WebRequest http://169.254.169.254/latest/meta-data/instance-id).content
+$DocumentName = "ias_ad_default_doc"
+$AssociationName = "ASG_Domain_Join"    
+$bucket = 'iaslogs-e2'
+$target = @{Key="InstanceIds";Values=@("$InstanceId")}
+New-SSMAssociation -Name $DocumentName -Target $target  -AssociationName $AssociationName -S3Location_OutputS3BucketName $bucket -S3Location_OutputS3KeyPrefix 'ssm/associate'
+
+#Code to write out scheduled task script that self-deletes
+$scriptlocation = "$env:windir\temp\afterreboot.ps1"
+"Write-EventLog -Message 'HeadlessRestartTask: Map AWG Shared Drive' -LogName System -Source EventLog -EventId 333"| out-file $scriptlocation
+'New-PSDrive –Name "S" –PSProvider FileSystem –Root "\\fs-00b73d09e04ac7f76.ias.com\share" –Persist' | out-file $scriptlocation -append
+"schtasks.exe /delete /f /tn HeadlessRestartTask" | out-file $scriptlocation -append
+
+#This code schedules the above script
+schtasks.exe /create /f /tn HeadlessRestartTask /ru SYSTEM /sc ONSTART /tr "powershell.exe -file $scriptlocation"
+Write-Host "`"$scriptlocation`" is scheduled to run once after reboot."
+
+#reboot instance
+exit
+</powershell>
+<persist>true</persist>

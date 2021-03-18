@@ -1,0 +1,15 @@
+<powershell>
+Set-TimeZone -Id "Pacific Standard Time" -PassThru
+Set-DefaultAWSRegion -Region us-east-2
+$InstanceId = (Invoke-WebRequest http://169.254.169.254/latest/meta-data/instance-id).content
+$DocumentName = "ias_ad_default_doc"
+$AssociationName = "ASG_Domain_Join"    
+$bucket = 'iaslogs-e2'
+$target = @{Key="InstanceIds";Values=@("$InstanceId")}
+New-SSMAssociation -Name $DocumentName -Target $target -S3Location_OutputS3BucketName $bucket -S3Location_OutputS3KeyPrefix 'ssm/associate'
+
+Rename-Computer -NewName $InstanceId  -Force
+
+exit
+</powershell>
+<persist>true</persist>

@@ -1,0 +1,121 @@
+{   "schemaVersion": "0.3",
+    "description": "Launch Automation for Windows 2019 instance",
+    "assumeRole":"{{AutomationAssumeRole}}",
+    "parameters": {
+
+        "IamInstanceProfileName":{
+            "type":"String",
+            "description":"The name of the role that enables Systems Manager (SSM) to manage the instance.",
+            "default":"instance_launch_automation"
+            },
+        "AutomationAssumeRole":{
+            "type":"String",
+            "description":"The ARN of the role that allows Automation to perform the actions on your behalf.",
+            "default":"arn:aws:iam::665515063972:policy/Instance-Launch-Automation"
+        },      
+        "InstanceIds": { 
+            "type": "String",
+            "description": "Instance to create image from"
+      }
+      },
+    "mainSteps": [{
+            "name": "waitForInstancesToStart",
+            "action": "aws:changeInstanceState",
+            "timeoutSeconds": 300,
+            "onFailure": "Abort",
+            "inputs": {
+                "InstanceIds": [
+                    "{{launchInstance.InstanceIds}}"
+                ],
+                "CheckStateOnly": true,
+                "DesiredState": "running"
+            },
+            "nextStep": "installAWSCLI"
+        },
+        {
+            "name": "installAWSCLI",
+            "action": "aws:runCommand",
+            "timeoutSeconds": 300,
+            "onFailure": "Continue",
+            "inputs": {
+                "DocumentName": "Install_AWSCLI_windows",
+                "InstanceIds": ["{{InstanceIds}}"]
+            },
+            "nextStep": "waitForInstancesToRebootAfterCLI"
+        },
+        {
+            "name": "waitForInstancesToRebootAfterCLI",
+            "action": "aws:changeInstanceState",
+            "timeoutSeconds": 300,
+            "onFailure": "Abort",
+            "inputs": {
+                "InstanceIds": [
+                    "{{InstanceIds}}"
+                ],
+                "CheckStateOnly": true,
+                "DesiredState": "running"
+            },
+            "nextStep": "changeHostname"
+        },
+        {
+            "name": "changeHostname",
+            "action": "aws:runCommand",
+            "onFailure": "Abort",
+            "timeoutSeconds": 300,
+            "inputs": {
+                "DocumentName": "AWS-RunPowerShellScript",
+                "InstanceIds": ["{{InstanceIds}}"],
+                "Parameters": {
+                    "commands": [
+                        "$currentHostname = hostname\n",
+                        "$instanceId = ((Invoke-WebRequest -Uri http://169.254.169.254/latest/meta-data/instance-id -UseBasicParsing).Content)\n",
+                        "$newHostname = (aws ec2 describe-instances --instance-id $instanceId --region us-east-2 --query 'Reservations[0].Instances[0].Tags[?Key==`hostname`].Value' --output text)\n",
+                        "if (!$newHostname) {echo 'hostname (case sensitive) tag is missing on the instance'; exit -1;}\n",
+                        "Rename-computer –computername \"$currentHostname\" –newname \"$newHostname\"\n",
+                        "Restart-Computer -Force"
+                    ]
+                }
+            },
+            "nextStep": "waitForInstancesToStartAfterReboot"
+        },
+        {
+            "name": "waitForInstancesToStartAfterReboot",
+            "action": "aws:changeInstanceState",
+            "timeoutSeconds": 300,
+            "onFailure": "Abort",
+            "inputs": {
+                "InstanceIds": [
+                    "{{InstanceIds}}"
+                ],
+                "CheckStateOnly": true,
+                "DesiredState": "running"
+            },
+            "nextStep": "joinDomain"
+        },
+        {
+            "name": "joinDomain",
+            "action": "aws:runCommand",
+            "onFailure": "Abort",
+            "timeoutSeconds": 300,
+            "inputs": {
+                "DocumentName": "AWS-RunPowerShellScript",
+                "InstanceIds": ["{{InstanceIds}}"],
+                "Parameters": {
+                    "commands": [
+                        "$ipdns = (Get-SSMParameterValue -Name /domain/dns_ip).Parameters[0].Value\n",
+                        "$domain = (Get-SSMParameterValue -Name /domain/name).Parameters[0].Value\n",
+                        "$ouPath = (Get-SSMParameterValue -Name /domain/ou_path).Parameters[0].Value\n",
+                        "$username = (Get-SSMParameterValue -Name /domain/username).Parameters[0].Value\n",
+                        "$domain_username = \"$domain\\$username\"\n",
+                        "echo $domain_username\n",
+                        "$password = (Get-SSMParameterValue -Name /domain/password -WithDecryption $True).Parameters[0].Value | ConvertTo-SecureString -asPlainText -Force\n",
+                        "$credential = New-Object System.Management.Automation.PSCredential($domain_username,$password)\n",
+                        "Set-DnsClientServerAddress \"Ethernet\" -ServerAddresses $ipdns\n",
+                        "Add-Computer -DomainName $domain -OUPath \"$ouPath\" -Credential $credential\n",
+                        "Restart-Computer -Force"
+                    ]
+                }
+            }
+        }
+    ]
+}
